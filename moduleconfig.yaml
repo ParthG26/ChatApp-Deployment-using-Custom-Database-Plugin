@@ -1,0 +1,40 @@
+- name: Configure MySQL server
+  hosts: mysql
+  become: yes
+  gather_facts: yes
+
+  vars_files:
+    - vars.yaml
+    - secrets.yaml
+  
+  tasks:
+    - name: Run custom module for mysql setup for chatapp deployment
+      mysql_setup:
+        db_name: "{{db_name}}"
+        db_password: "{{db_password}}"
+        db_username: "{{db_username}}"
+
+- name: Configure Django backend server
+  hosts: django
+  become: yes
+  gather_facts: yes
+
+  vars_files:
+    - vars.yaml
+    - secrets.yaml
+
+  roles:
+    - Backend
+    
+
+- name: Configure Nginx as frontend reverse proxy
+  hosts: nginx
+  become: yes
+  gather_facts: yes
+
+  vars:
+    backend_private_ip: "{{ groups['django'][0]}}"
+
+  roles:
+    - Frontend
+    

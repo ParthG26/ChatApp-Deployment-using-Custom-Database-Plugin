@@ -1,0 +1,68 @@
+    - name: install pymysql
+      apt:
+        name: python3-pymysql
+        state: present
+
+    - name: install mysql
+      apt:
+        name: mysql-server
+        state: present
+        update_cache: yes
+
+    - name: running status of mysql
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Allow MySQL to listen on all interfaces
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+        state: present
+
+    - name: Check if root password is already set
+      command: >
+        mysql -u root -e "SELECT User FROM mysql.user WHERE User='root';"
+      register: root_password_check
+      failed_when: false
+      changed_when: false
+
+    - name: Set root password and switch auth plugin (first run only)
+      mysql_user:
+        name: root
+        host: localhost
+        password: "{{ db_password }}"
+        plugin: mysql_native_password
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      when: "'using password' not in root_password_check.stderr"
+
+
+    - name: Creating database
+      mysql_db:
+        login_user: root
+        login_password: "{{ db_password }}"
+        name: "{{ db_name }}"
+        state: present
+
+    - name: Creating user
+      mysql_user:
+        login_user: root
+        login_password: "{{ db_password }}"
+        name: "{{ db_username }}"
+        password: "{{ db_password }}"
+        host: "%"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+
+
+    - name: Allow Django backend to connect to MySQL
+      community.mysql.mysql_user:
+        name: "{{ db_username }}"
+        password: "{{ db_password }}"
+        host: "{{groups['django'][0]] }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ db_password }}"

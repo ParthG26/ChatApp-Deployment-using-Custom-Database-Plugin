@@ -1,0 +1,123 @@
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required system packages
+      apt:
+        name:
+          - software-properties-common
+          - git
+        state: present
+
+    - name: Add deadsnakes PPA
+      apt_repository:
+        repo: ppa:deadsnakes/ppa
+        state: present
+
+    - name: Update apt cache after adding PPA
+      apt:
+        update_cache: yes
+
+    - name: Install Python 3.8 and dependencies
+      apt:
+        name:
+          - python3.8
+          - python3.8-venv
+          - python3.8-distutils
+          - gcc
+          - python3.8-dev
+          - default-libmysqlclient-dev
+          - build-essential
+          - pkg-config
+        state: present
+
+    - name: Clone Django app repo
+      git:
+        repo: "{{ gitrepo }}"
+        dest: "{{ app_dir }}"
+        version: HEAD
+        force: yes
+
+    - name: Ensure ubuntu owns the app directory
+      file:
+        path: "{{ app_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+
+    - name: Create Python virtual environment
+      command: python3.8 -m venv {{ app_dir }}/venv
+      args:
+        creates: "{{ app_dir }}/venv"
+
+    - name: Upgrade pip in venv
+      command: "{{ app_dir }}/venv/bin/pip install --upgrade pip"
+
+    - name: Install pip requirements
+      pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ app_dir }}/venv"
+
+    - name: Install extra Python packages
+      pip:
+        name:
+          - mysqlclient
+          - gunicorn
+        virtualenv: "{{ app_dir }}/venv"
+
+    - name: Set environment variables in /etc/environment
+      lineinfile:
+        path: /etc/environment
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "DB_NAME={{ db_name }}"
+        - "DB_USER={{ db_username }}"
+        - "DB_PASSWORD={{ db_password }}"
+        - "DB_HOST={{ db_host }}"
+        - "DB_PORT={{ db_port }}"
+
+    - name: Export environment variables for current session
+      shell: |
+        export DB_NAME={{ db_name }}
+        export DB_USER={{ db_username }}
+        export DB_PASSWORD={{ db_password }}
+        export DB_HOST={{ db_host }}
+        export DB_PORT={{ db_port }}
+
+    - name: Run Django makemigrations with environment
+      shell: |
+        DB_NAME={{ db_name }} DB_USER={{ db_username }} DB_PASSWORD={{ db_password }} \
+        DB_HOST={{ db_host }} DB_PORT={{ db_port }} \
+        {{ app_dir }}/venv/bin/python manage.py makemigrations
+      args:
+        chdir: "{{ app_dir }}/fundoo"
+
+    - name: Run Django migrate with environment
+      shell: |
+        DB_NAME={{ db_name }} DB_USER={{ db_username }} DB_PASSWORD={{ db_password }} \
+        DB_HOST={{ db_host }} DB_PORT={{ db_port }} \
+        {{ app_dir }}/venv/bin/python manage.py migrate
+      args:
+        chdir: "{{ app_dir }}/fundoo"
+
+    - name: Create Gunicorn systemd service file using template
+      become: true
+      template:
+        src: templates/gunicorn.service.j2
+        dest: /etc/systemd/system/gunicorn.service
+        mode: '0644'
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable Gunicorn service
+      systemd:
+        name: gunicorn
+        enabled: yes
+
+    - name: Start Gunicorn service
+      systemd:
+        name: gunicorn
+        state: started

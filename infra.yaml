@@ -1,0 +1,280 @@
+---
+- name: create vpc and subnets
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars.yaml
+    
+  tasks:
+
+    - name: Create Key-Pair
+      amazon.aws.ec2_key:
+        name: "{{key_name}}"
+        region: "{{region}}"
+        state: present
+      no_log: true
+      register: keypair
+
+    - name: Save private key to file
+      copy:
+        content: "{{ keypair.key.private_key }}"
+        dest: "./ChatApp.pem"
+        mode: '0400'
+      when: keypair.key.private_key is defined
+
+
+    - name: Set key file as fact
+      set_fact:
+        key_file_path: "{{ key_file }}"
+
+
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        name: "ChatApp-VPC"
+        cidr_block: "{{ vpc_cidr_block }}"
+        region: "{{ region }}"
+      register: myvpc
+
+    - name: Create Public Subnets
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ myvpc.vpc.id }}"
+        cidr: "{{ item.cidr }}"
+        az: "{{ item.az }}"
+        map_public: true
+        state: present
+        region: "{{ region }}"
+        tags:
+          Name: "{{ item.name }}"
+      loop: "{{ public_subnets }}"
+      register: public_subnets_results
+
+    - name: Create Private Subnets
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ myvpc.vpc.id }}"
+        cidr: "{{ item.cidr }}"
+        az: "{{ item.az }}"
+        map_public: false
+        state: present
+        region: "{{ region }}"
+        tags:
+          Name: "{{ item.name }}"
+      loop: "{{ private_subnets }}"
+      register: private_subnets_results
+
+    - name: Create Internet Gateway
+      amazon.aws.ec2_vpc_igw:
+        vpc_id: "{{ myvpc.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: "ChatApp-IGW"
+      register: igw
+
+    - name: Create NAT Gateway
+      amazon.aws.ec2_vpc_nat_gateway:
+        subnet_id: "{{ public_subnets_results.results[0].subnet.id }}"
+        wait: true
+        state: present
+        region: "{{ region }}"
+        if_exist_do_not_create: true
+        tags:
+          Name: "ChatApp-NATGW"
+      register: nat
+
+    - name: Create Public Route Table
+      amazon.aws.ec2_vpc_route_table:
+        vpc_id: "{{ myvpc.vpc.id }}"
+        region: "{{ region }}"
+        tags:
+          Name: "Public-RT"
+        subnets: "{{ public_subnets_results.results | map(attribute='subnet.id') | list }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw.gateway_id }}"
+      register: public_rt
+
+    - name: Create the Private Route Table
+      amazon.aws.ec2_vpc_route_table:
+        vpc_id: "{{ myvpc.vpc.id }}"
+        region: "{{ region }}"
+        tags:
+          Name: "private-rt"
+        subnets: "{{ private_subnets_results.results | map(attribute='subnet.id') | list }}"
+        routes:
+          - dest: 0.0.0.0/0
+            nat_gateway_id: "{{ nat.nat_gateway_id }}"
+      register: private_rt
+
+    - name: Create Security Group for Nginx
+      amazon.aws.ec2_security_group:
+        name: nginx_sg
+        description: security group for nginx
+        vpc_id: "{{myvpc.vpc.id}}"
+        tags:
+          Name: "Frontend-sg"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+
+    - name: Create Security Group for Backend
+      amazon.aws.ec2_security_group:
+        name: django_sg
+        description: security group for django
+        vpc_id: "{{myvpc.vpc.id}}"
+        tags:
+          Name: "Backend-sg"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+
+          - proto: tcp
+            from_port: 8000
+            to_port: 8000
+            cidr_ip: 0.0.0.0/0
+
+          - proto: tcp
+            from_port: 3306
+            to_port: 3306
+            cidr_ip: 0.0.0.0/0
+
+    - name: Create Security Group for Database
+      amazon.aws.ec2_security_group:
+        name: mysql_sg
+        description: security group for mysql
+        vpc_id: "{{myvpc.vpc.id}}"
+        tags:
+          Name: "Database-sg"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+
+          - proto: tcp
+            from_port: 3306
+            to_port: 3306
+            cidr_ip: 0.0.0.0/0
+
+    - name: Launch Frontend Instance
+      amazon.aws.ec2_instance:
+        name: Frontend
+        key_name: "{{key_name}}"
+        instance_type: t2.micro
+        image_id: "{{ami}}"
+        vpc_subnet_id: "{{public_subnets_results.results[0].subnet.id}}"
+        security_group: nginx_sg
+        region: "{{region}}"
+        wait: true
+      register: frontend_instance
+
+    - name: Wait for SSH to be available on nginx
+      ansible.builtin.wait_for:
+        port: 22
+        delay: 5
+        timeout: 120
+        host: "{{ frontend_instance.instances[0].public_ip_address }}"
+      delegate_to: localhost
+      when: frontend_instance.instances[0].public_ip_address is defined
+
+    - name: Add nginx instance to inventory group
+      add_host:
+        name: nginx
+        ansible_host: "{{ frontend_instance.instances[0].public_ip_address }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ key_file }}"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: nginx
+
+    - name: launch django server
+      amazon.aws.ec2_instance:
+        name: Backend
+        key_name: "{{key_name}}"
+        instance_type: t2.micro
+        image_id: "{{ami}}"
+        vpc_subnet_id: "{{private_subnets_results.results[0].subnet.id}}"
+        security_group: django_sg
+        region: "{{region}}"
+        wait: true
+      register: backend_instance
+
+    - name: Set backend_private_ip fact for later use
+      set_fact:
+        backend_private_ip: "{{ backend_instance.instances[0].private_ip_address }}"
+    - name: Set fact for backend private DNS name
+      set_fact:
+        backend_private_dns:
+          value: "{{ backend_instance.instances[0].private_dns_name }}"
+          cacheable: yes
+    - name: Add django instance to inventory group
+      add_host:
+        name: django
+        ansible_host: "{{ backend_instance.instances[0].private_ip_address }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ key_file }}"
+        ansible_ssh_common_args: '-o ProxyCommand="ssh -i {{ key_file }} -W %h:%p ubuntu@{{ frontend_instance.instances[0].public_ip_address }}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: django
+
+    - name: launch mysql server
+      amazon.aws.ec2_instance:
+        name: Database
+        key_name: "{{key_name}}"
+        instance_type: t2.micro
+        image_id: "{{ami}}"
+        vpc_subnet_id: "{{private_subnets_results.results[0].subnet.id}}"
+        security_group: mysql_sg
+        region: "{{region}}"
+        wait: true
+      register: database_instance
+
+    - name: Add mysql instance to inventory group
+      add_host:
+        name: mysql
+        ansible_host: "{{ database_instance.instances[0].private_ip_address }}"
+        backend_private_dns: "{{ backend_instance.instances[0].private_dns_name }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ key_file }}"
+        ansible_ssh_common_args: '-o ProxyCommand="ssh -i {{ key_file }} -W %h:%p ubuntu@{{ frontend_instance.instances[0].public_ip_address }}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: mysql
+
+    - name: Write inventory.ini file for future use
+      ansible.builtin.copy:
+        dest: ./inventory.ini
+        content: |
+          [nginx]
+          {{ frontend_instance.instances[0].public_ip_address }}
+
+          [django]
+          {{ backend_instance.instances[0].private_ip_address }} ansible_ssh_common_args='-o ProxyCommand="ssh -i ChatApp.pem -W %h:%p ubuntu@{{ frontend_instance.instances[0].public_ip_address }}"'
+
+          [mysql]
+          {{ database_instance.instances[0].private_ip_address }} ansible_ssh_common_args='-o ProxyCommand="ssh -i ChatApp.pem -W %h:%p ubuntu@{{ frontend_instance.instances[0].public_ip_address }}"'
+
+          [all:vars]
+          ansible_user=ubuntu
+          ansible_ssh_private_key_file=./ChatApp.pem
+
+
+- name: Copy private key to Nginx (Bastion Host)
+  hosts: nginx
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Copy private key to Bastion host for jump access
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost'].key_file_path }}"
+        dest: "/home/ubuntu/ChatApp.pem"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0400'

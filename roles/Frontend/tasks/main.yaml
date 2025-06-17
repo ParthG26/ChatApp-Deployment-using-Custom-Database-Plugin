@@ -1,0 +1,35 @@
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Create Nginx reverse proxy config for chat_app from template
+      become: true
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/chat_app.conf
+        mode: '0644'
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Enable chat_app Nginx site
+      file:
+        src: /etc/nginx/sites-available/chat_app.conf
+        dest: /etc/nginx/sites-enabled/chat_app.conf
+        state: link
+        force: yes
+
+    - name: Test Nginx configuration
+      command: nginx -t
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

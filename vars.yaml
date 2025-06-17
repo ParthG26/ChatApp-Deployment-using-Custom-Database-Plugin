@@ -1,0 +1,25 @@
+region: ap-south-1
+vpc_cidr_block: "10.0.0.0/16"
+public_subnets:
+  - cidr: "10.0.1.0/24"
+    az: "ap-south-1a"
+    name: "Public-1"
+  - cidr: "10.0.2.0/24"
+    az: "ap-south-1b"
+    name: "Public-2"
+private_subnets:
+  - cidr: "10.0.3.0/24"
+    az: "ap-south-1a"
+    name: "Private-1"
+  - cidr: "10.0.4.0/24"
+    az: "ap-south-1b"
+    name: "Private-2"
+key_name: ChatApp
+key_file: "./ChatApp.pem"
+db_name: "ChatApp"
+mysql_root_user: "root"
+db_host: "{{ groups['mysql'][0] }}"
+db_port: 3306
+ami: "ami-0f918f7e67a3323f0"
+app_dir: /chatapp
+gitrepo: https://github.com/ARPIT226/chat_app.git

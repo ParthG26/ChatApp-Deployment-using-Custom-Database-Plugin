@@ -1,0 +1,18 @@
+[Unit]
+Description=Gunicorn service for Django app
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory={{ app_dir }}
+Environment="DB_NAME={{ db_name }}"
+Environment="DB_USER={{ db_username }}"
+Environment="DB_PASSWORD={{ db_password }}"
+Environment="DB_HOST={{ db_host }}"
+Environment="DB_PORT={{ db_port }}"
+ExecStart=/bin/bash -c 'cd {{ app_dir }} && source venv/bin/activate && cd {{ app_dir }}/fundoo && {{ app_dir }}/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:8000 fundoo.wsgi:application'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
